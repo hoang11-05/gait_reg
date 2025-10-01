@@ -6,7 +6,7 @@ from model.person_det.SSD.model_data.detect_person import ssd_detect_person
 from model.person_det.yolov5.detect_person import yolov5_detect_person
 from model.person_det.yolov8.detect_person import yolov8_detect_person
 
-model_detect_func = yolov5_detect_person  
+model_detect_func = ssd_detect_person  
 
 def test_model_on_video(video_path, smooth_n=30):
     cap = cv2.VideoCapture(video_path)
@@ -93,5 +93,5 @@ def test_model_on_video(video_path, smooth_n=30):
 
 
 if __name__ == "__main__":
-    video_path = r"D:\gait_reg\vlc-record-2025-09-26-10h45m32s-rtsp___117.2.126.196_554_stream1-.avi"
+    video_path = r"D:\gait_reg\test.mp4"
     test_model_on_video(video_path)
