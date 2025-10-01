@@ -1,10 +1,9 @@
-#!/usr/bin/env python3
-# coding=utf-8
 import warnings
 warnings.filterwarnings("ignore")
 
 import os
 import cv2
+import numpy as np
 from config import conf
 
 # === Thiết lập GPU (nếu có) ===
@@ -26,65 +25,94 @@ net.setInputScale(1.0 / 127.5)
 net.setInputMean((127.5, 127.5, 127.5))
 net.setInputSwapRB(True)
 
-# === Skip frame control ===
-SSD_PROCESS_INTERVAL = 2  # detect mỗi 2 frame
+# Tối ưu: Nếu có CUDA/OpenVINO thì bật backend (tùy môi trường)
+try:
+    net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+    net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+except Exception:
+    net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+    net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+
+# === Detection skip control (process every N frames) ===
+SSD_PROCESS_INTERVAL = 2   # 2 frame bỏ qua, 1 frame detect
 _SSD_FRAME_COUNTER = 0
-_SSD_LAST_ANNOTATED = None  # cache ảnh kết quả đã vẽ
+_SSD_LAST_BOX = None
+_SSD_LAST_CONFIDENCE = 0.0
+_SSD_LAST_HAS_PERSON = False
+_SSD_LAST_LABEL = ""
 
 
 def reset_ssd_skip_state():
-    """Reset bộ đếm khi đổi video."""
-    global _SSD_FRAME_COUNTER, _SSD_LAST_ANNOTATED
+    """Reset trạng thái bộ nhớ detection"""
+    global _SSD_FRAME_COUNTER, _SSD_LAST_BOX, _SSD_LAST_CONFIDENCE, _SSD_LAST_HAS_PERSON, _SSD_LAST_LABEL
     _SSD_FRAME_COUNTER = 0
-    _SSD_LAST_ANNOTATED = None
+    _SSD_LAST_BOX = None
+    _SSD_LAST_CONFIDENCE = 0.0
+    _SSD_LAST_HAS_PERSON = False
+    _SSD_LAST_LABEL = ""
 
 
 def ssd_detect_person(img, label="", conf_threshold: float = 0.6):
     """
-    Detect người trong ảnh bằng SSD + skip frame.
-    - img: ảnh BGR
-    - label: text dán khi có đúng 1 người
-    - return: ảnh đã annotate
+    Phát hiện 1 người trong ảnh bằng SSD, lấy bbox có confidence cao nhất.
+    Args:
+        img: ảnh BGR đầu vào
+        label: text hiển thị trên bbox
+        conf_threshold: ngưỡng confidence tối thiểu
+    Returns:
+        img đã annotate
     """
-    global _SSD_FRAME_COUNTER, _SSD_LAST_ANNOTATED
+    global _SSD_FRAME_COUNTER, _SSD_LAST_BOX, _SSD_LAST_CONFIDENCE, _SSD_LAST_HAS_PERSON, _SSD_LAST_LABEL
 
     _SSD_FRAME_COUNTER += 1
-    if _SSD_FRAME_COUNTER > 1e9:  # tránh tràn số
-        _SSD_FRAME_COUNTER = 0
-
-    # Chỉ detect ở frame chia hết cho interval
-    is_detection_frame = (_SSD_FRAME_COUNTER % SSD_PROCESS_INTERVAL) == 0
+    is_detection_frame = (_SSD_FRAME_COUNTER % SSD_PROCESS_INTERVAL) == 1
 
     if is_detection_frame:
-        class_ids, confidences, boxes = net.detect(img, confThreshold=conf_threshold, nmsThreshold=0.1)
+        class_ids, confidences, boxes = net.detect(
+            img, confThreshold=conf_threshold, nmsThreshold=0.1
+        )
 
-        annotated_img = img.copy()
-        person_boxes = []
+        has_detection = not (isinstance(class_ids, tuple) or len(class_ids) == 0)
+        _SSD_LAST_HAS_PERSON = False
+        _SSD_LAST_BOX = None
+        _SSD_LAST_CONFIDENCE = 0.0
+        _SSD_LAST_LABEL = label
 
-        if class_ids is not None and len(class_ids) > 0:
+        if has_detection:
+            # Tìm bbox person có confidence cao nhất
+            best_conf = -1
+            best_box = None
             for class_id, confidence, box in zip(class_ids.flatten(), confidences.flatten(), boxes):
-                if CLASSES[class_id].lower() == "person":
-                    x, y, w, h = box
-                    person_boxes.append((x, y, w, h))
+                if CLASSES[class_id].lower() == "person" and confidence > best_conf:
+                    best_conf = confidence
+                    best_box = box
 
-        # Vẽ box
-        for (x, y, w, h) in person_boxes:
-            cv2.rectangle(annotated_img, (x, y), (x + w, y + h), (0, 255, 0), 2)
-        if len(person_boxes) == 1 and label:
-            x, y, w, h = person_boxes[0]
+            if best_box is not None:
+                _SSD_LAST_HAS_PERSON = True
+                _SSD_LAST_BOX = tuple(best_box)
+                _SSD_LAST_CONFIDENCE = float(best_conf)
+
+    # Vẽ bbox nếu có
+    if _SSD_LAST_HAS_PERSON and _SSD_LAST_BOX:
+        x, y, w, h = _SSD_LAST_BOX
+        cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+        if _SSD_LAST_LABEL:
+            text = f"{_SSD_LAST_LABEL} ({_SSD_LAST_CONFIDENCE:.2f})"
             cv2.putText(
-                annotated_img, label, (x, y - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
+                img,
+                text,
+                (x, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2
             )
 
-        _SSD_LAST_ANNOTATED = annotated_img
-        return annotated_img
-
-    # Nếu frame skip thì trả về ảnh cache gần nhất
-    return _SSD_LAST_ANNOTATED if _SSD_LAST_ANNOTATED is not None else img
+    return img
 
 
-# === Demo chạy thử với video/webcam ===
+
 # if __name__ == "__main__":
 #     import argparse
 #     parser = argparse.ArgumentParser()
@@ -93,27 +121,19 @@ def ssd_detect_person(img, label="", conf_threshold: float = 0.6):
 #     args = parser.parse_args()
 
 #     cap = cv2.VideoCapture(int(args.source) if args.source.isdigit() else args.source)
-
 #     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-#     out = None
+#     out = cv2.VideoWriter(args.output, fourcc, 20.0, (640, 480))
 
 #     while True:
 #         ret, frame = cap.read()
 #         if not ret:
 #             break
-
-#         if out is None:
-#             h, w = frame.shape[:2]
-#             out = cv2.VideoWriter(args.output, fourcc, 20.0, (w, h))
-
 #         result_frame = ssd_detect_person(frame, label="User A")
 #         out.write(result_frame)
 #         cv2.imshow('SSD Person Detection', result_frame)
-
 #         if cv2.waitKey(1) & 0xFF == ord('q'):
 #             break
 
 #     cap.release()
-#     if out:
-#         out.release()
+#     out.release()
 #     cv2.destroyAllWindows()

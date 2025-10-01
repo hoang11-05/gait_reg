@@ -157,7 +157,7 @@ class TrackObject:
 
 
 class SORTTracker:
-    def __init__(self, max_age=30, min_hits=3, iou_threshold=0.5):
+    def __init__(self, max_age=40, min_hits=2, iou_threshold=0.2):
         """
         Sets key parameters for SORT
         """
